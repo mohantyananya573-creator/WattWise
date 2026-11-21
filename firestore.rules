@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.admin == true || 
+         request.auth.token.role == 'admin');
+    }
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // User profile document
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) 
+        && request.resource.data.email is string
+        && request.resource.data.fullName is string;
+      allow update: if isOwner(userId)
+        // Prevent users from elevating their own role
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']) || isAdmin());
+      allow delete: if isOwner(userId);
+
+      // User's appliances subcollection
+      match /appliances/{applianceId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // User's tariff settings subcollection
+      match /tariffSettings/{tariffId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // User's monthly historical records subcollection
+      match /monthlyRecords/{recordId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // User's budget settings subcollection
+      match /budgetSettings/{budgetId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Public / authenticated reference data for grid emissions factors
+    match /emissionsFactors/{factorId} {
+      // Authenticated users can read valid emission factors
+      allow read: if isAuthenticated();
+      // Only administrators can create, update, or delete emission factors
+      allow write: if isAdmin();
+    }
+  }
+}
