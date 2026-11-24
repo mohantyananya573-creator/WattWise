@@ -3,6 +3,7 @@ import { useAuth } from './AuthContext';
 import {
   Appliance,
   BudgetSettings,
+  CalculationSnapshot,
   EmissionsFactor,
   MonthlyRecord,
   TariffSettings,
@@ -19,6 +20,9 @@ import {
   getMonthlyRecords,
   saveMonthlyRecord,
   deleteMonthlyRecord,
+  getCalculationSnapshots,
+  saveCalculationSnapshot,
+  deleteCalculationSnapshot,
   getBudgetSettings,
   saveBudgetSettings,
   getEmissionsFactors,
@@ -39,6 +43,7 @@ interface DataContextType {
   appliances: Appliance[];
   tariffSettings: TariffSettings;
   monthlyRecords: MonthlyRecord[];
+  calculationSnapshots: CalculationSnapshot[];
   budgetSettings: BudgetSettings;
   emissionsFactors: EmissionsFactor[];
   selectedEmissionsFactor: EmissionsFactor;
@@ -74,7 +79,14 @@ interface DataContextType {
   editAppliance: (id: string, data: Partial<Appliance>) => Promise<void>;
   removeAppliance: (id: string) => Promise<void>;
   updateTariff: (settings: TariffSettings) => Promise<void>;
-  saveCurrentMonthRecord: (periodStart: string, periodEnd: string, customBudget?: number) => Promise<MonthlyRecord>;
+  saveCurrentMonthRecord: (
+    periodStart: string,
+    periodEnd: string,
+    options?: { customBudget?: number; overwriteRecordId?: string }
+  ) => Promise<MonthlyRecord>;
+  checkDuplicateMonthRecord: (periodStart: string, periodEnd: string) => MonthlyRecord | undefined;
+  saveCalculationSnapshotAction: (periodStart: string, periodEnd: string) => Promise<CalculationSnapshot>;
+  removeCalculationSnapshot: (snapshotId: string) => Promise<void>;
   removeRecord: (recordId: string) => Promise<void>;
   updateBudget: (budget: BudgetSettings) => Promise<void>;
   refreshAllData: () => Promise<void>;
@@ -87,6 +99,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [appliances, setAppliances] = useState<Appliance[]>([]);
   const [tariffSettings, setTariffSettings] = useState<TariffSettings>(DEFAULT_TARIFF_SETTINGS);
   const [monthlyRecords, setMonthlyRecords] = useState<MonthlyRecord[]>([]);
+  const [calculationSnapshots, setCalculationSnapshots] = useState<CalculationSnapshot[]>([]);
   const [budgetSettings, setBudgetSettings] = useState<BudgetSettings>({
     id: 'current',
     userId: '',
@@ -104,18 +117,20 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsLoading(true);
     setError(null);
     try {
-      const [apps, tariff, records, budget, factors] = await Promise.all([
+      const [apps, tariff, records, budget, factors, snapshots] = await Promise.all([
         getAppliances(userId),
         getTariffSettings(userId),
         getMonthlyRecords(userId),
         getBudgetSettings(userId),
         getEmissionsFactors(),
+        getCalculationSnapshots(userId),
       ]);
 
       setAppliances(apps);
       setTariffSettings(tariff);
       setMonthlyRecords(records);
       setBudgetSettings(budget);
+      setCalculationSnapshots(snapshots);
       if (factors && factors.length > 0) {
         setEmissionsFactors(factors);
         setSelectedEmissionsFactor(factors[0]);
@@ -134,6 +149,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } else {
       setAppliances([]);
       setMonthlyRecords([]);
+      setCalculationSnapshots([]);
       setIsLoading(false);
     }
   }, [currentUser?.uid]);
@@ -273,17 +289,33 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const saveCurrentMonthRecord = async (periodStart: string, periodEnd: string, customBudget?: number) => {
+  const checkDuplicateMonthRecord = (periodStart: string, periodEnd: string): MonthlyRecord | undefined => {
+    return monthlyRecords.find((r) => r.periodStart === periodStart && r.periodEnd === periodEnd);
+  };
+
+  const saveCurrentMonthRecord = async (
+    periodStart: string,
+    periodEnd: string,
+    options?: { customBudget?: number; overwriteRecordId?: string }
+  ) => {
     if (!currentUser) throw new Error('User not logged in');
 
-    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ];
     const startDate = new Date(periodStart);
-    const monthName = `${monthNames[startDate.getMonth()]} ${startDate.getFullYear()}`;
+    const monthName = !isNaN(startDate.getTime())
+      ? `${monthNames[startDate.getMonth()]} ${startDate.getFullYear()}`
+      : 'Billing Period';
 
-    // Verify existing record to avoid accidental overwrite
-    const existing = monthlyRecords.find((r) => r.periodStart === periodStart && r.periodEnd === periodEnd);
-    if (existing) {
-      throw new Error(`A record already exists for the period ${periodStart} to ${periodEnd}.`);
+    // Verify existing record to avoid accidental overwrite unless overwriteRecordId is specified
+    const existing = checkDuplicateMonthRecord(periodStart, periodEnd);
+    if (existing && !options?.overwriteRecordId) {
+      const err: any = new Error(`A record already exists for the period ${periodStart} to ${periodEnd}.`);
+      err.existingRecord = existing;
+      err.isDuplicate = true;
+      throw err;
     }
 
     const recordData: Omit<MonthlyRecord, 'id' | 'userId' | 'createdAt'> = {
@@ -296,20 +328,80 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       fixedCharge: currentBillResult.fixedCharge,
       otherCharges: currentBillResult.otherCharges,
       credits: currentBillResult.credits,
-      monthlyBudget: customBudget || budgetSettings.monthlyBudget,
+      monthlyBudget: options?.customBudget || budgetSettings.monthlyBudget,
       carbonEmissionsKg: currentCarbonEmissionsKg,
       emissionsFactor: selectedEmissionsFactor.factorValue,
       emissionsFactorSource: selectedEmissionsFactor.sourceName,
-      applianceSnapshots: applianceSnapshots,
+      applianceSnapshots: [...applianceSnapshots],
+      tariffSnapshot: { ...tariffSettings },
     };
 
     try {
-      const saved = await saveMonthlyRecord(currentUser.uid, recordData);
-      setMonthlyRecords((prev) => [saved, ...prev]);
-      toast.success(`Saved monthly record for ${monthName}!`);
+      const saved = await saveMonthlyRecord(currentUser.uid, recordData, options?.overwriteRecordId);
+      if (options?.overwriteRecordId) {
+        setMonthlyRecords((prev) =>
+          prev.map((r) => (r.id === options.overwriteRecordId ? saved : r))
+        );
+        toast.success(`Updated monthly record for ${monthName}!`);
+      } else {
+        setMonthlyRecords((prev) => [saved, ...prev]);
+        toast.success(`Saved monthly record for ${monthName}!`);
+      }
       return saved;
     } catch (err: any) {
-      toast.error('Failed to save monthly record: ' + err?.message);
+      console.error('Error saving monthly record:', err);
+      toast.error('Failed to save monthly record: ' + (err?.message || 'Database write error'));
+      throw err;
+    }
+  };
+
+  const saveCalculationSnapshotAction = async (
+    periodStart: string,
+    periodEnd: string
+  ): Promise<CalculationSnapshot> => {
+    if (!currentUser) throw new Error('User not logged in');
+
+    const snapshotData: Omit<CalculationSnapshot, 'id' | 'userId' | 'createdAt'> = {
+      calculationDate: new Date().toISOString(),
+      periodStart,
+      periodEnd,
+      provider: tariffSettings.provider,
+      consumerCategory: tariffSettings.consumerCategory,
+      tariffType: tariffSettings.tariffType,
+      totalKwh: currentBillResult.totalKwh,
+      energyCharges: currentBillResult.energyCharges,
+      fixedCharge: currentBillResult.fixedCharge,
+      otherCharges: currentBillResult.otherCharges,
+      credits: currentBillResult.credits,
+      totalEstimatedBill: currentBillResult.totalEstimatedBill,
+      effectiveRatePerKwh: currentBillResult.effectiveRatePerKwh,
+      applianceSnapshots: [...applianceSnapshots],
+      appliedSlabs: currentBillResult.slabBreakdown.map((s) => ({ ...s })),
+      emissionsFactor: selectedEmissionsFactor.factorValue,
+      emissionsFactorSource: selectedEmissionsFactor.sourceName,
+      carbonEmissionsKg: currentCarbonEmissionsKg,
+    };
+
+    try {
+      const saved = await saveCalculationSnapshot(currentUser.uid, snapshotData);
+      setCalculationSnapshots((prev) => [saved, ...prev]);
+      toast.success('Calculation snapshot saved successfully!');
+      return saved;
+    } catch (err: any) {
+      console.error('Error saving calculation snapshot:', err);
+      toast.error('Failed to save calculation snapshot: ' + (err?.message || 'Database write error'));
+      throw err;
+    }
+  };
+
+  const removeCalculationSnapshot = async (snapshotId: string) => {
+    if (!currentUser) return;
+    try {
+      await deleteCalculationSnapshot(currentUser.uid, snapshotId);
+      setCalculationSnapshots((prev) => prev.filter((s) => s.id !== snapshotId));
+      toast.success('Calculation snapshot deleted.');
+    } catch (err: any) {
+      toast.error('Failed to delete calculation snapshot: ' + err?.message);
       throw err;
     }
   };
@@ -350,6 +442,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         appliances,
         tariffSettings,
         monthlyRecords,
+        calculationSnapshots,
         budgetSettings,
         emissionsFactors,
         selectedEmissionsFactor,
@@ -368,6 +461,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         removeAppliance,
         updateTariff,
         saveCurrentMonthRecord,
+        checkDuplicateMonthRecord,
+        saveCalculationSnapshotAction,
+        removeCalculationSnapshot,
         removeRecord,
         updateBudget,
         refreshAllData,

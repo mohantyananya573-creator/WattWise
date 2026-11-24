@@ -90,7 +90,40 @@ export interface MonthlyRecord {
   emissionsFactor: number;
   emissionsFactorSource: string;
   applianceSnapshots: ApplianceSnapshot[];
+  tariffSnapshot?: TariffSettings;
   createdAt: string;
+  updatedAt?: string;
+}
+
+export interface CalculationSnapshot {
+  id: string;
+  userId: string;
+  calculationDate: string;
+  periodStart: string;
+  periodEnd: string;
+  provider: string;
+  consumerCategory: string;
+  tariffType: 'slab' | 'flat';
+  totalKwh: number;
+  energyCharges: number;
+  fixedCharge: number;
+  otherCharges: number;
+  credits: number;
+  totalEstimatedBill: number;
+  effectiveRatePerKwh: number;
+  applianceSnapshots: ApplianceSnapshot[];
+  appliedSlabs: {
+    from: number;
+    to: number | null;
+    rate: number;
+    unitsBilled: number;
+    cost: number;
+  }[];
+  emissionsFactor: number;
+  emissionsFactorSource: string;
+  carbonEmissionsKg: number;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface BudgetSettings {

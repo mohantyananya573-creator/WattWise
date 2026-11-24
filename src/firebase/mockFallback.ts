@@ -1,6 +1,7 @@
 import {
   Appliance,
   BudgetSettings,
+  CalculationSnapshot,
   MonthlyRecord,
   TariffSettings,
   UserProfile,
@@ -13,6 +14,7 @@ const MOCK_STORAGE_KEY_PROFILE = 'wattwise_mock_profile';
 const MOCK_STORAGE_KEY_APPLIANCES = 'wattwise_mock_appliances';
 const MOCK_STORAGE_KEY_TARIFF = 'wattwise_mock_tariff';
 const MOCK_STORAGE_KEY_RECORDS = 'wattwise_mock_records';
+const MOCK_STORAGE_KEY_SNAPSHOTS = 'wattwise_mock_snapshots';
 const MOCK_STORAGE_KEY_BUDGET = 'wattwise_mock_budget';
 
 const DEFAULT_MOCK_USER = {
@@ -284,13 +286,33 @@ export const mockFirestore = {
     localStorage.setItem(MOCK_STORAGE_KEY_RECORDS, JSON.stringify(DEFAULT_MOCK_RECORDS));
     return DEFAULT_MOCK_RECORDS;
   },
-  saveMonthlyRecord: async (userId: string, record: Omit<MonthlyRecord, 'id' | 'userId' | 'createdAt'>): Promise<MonthlyRecord> => {
+  saveMonthlyRecord: async (
+    userId: string,
+    record: Omit<MonthlyRecord, 'id' | 'userId' | 'createdAt'>,
+    overwriteRecordId?: string
+  ): Promise<MonthlyRecord> => {
     const records = await mockFirestore.getMonthlyRecords(userId);
+    const now = new Date().toISOString();
+
+    if (overwriteRecordId) {
+      const existing = records.find((r) => r.id === overwriteRecordId);
+      const updatedRecord: MonthlyRecord = {
+        ...record,
+        id: overwriteRecordId,
+        userId,
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+      };
+      const updated = records.map((r) => (r.id === overwriteRecordId ? updatedRecord : r));
+      localStorage.setItem(MOCK_STORAGE_KEY_RECORDS, JSON.stringify(updated));
+      return updatedRecord;
+    }
+
     const newRecord: MonthlyRecord = {
       ...record,
       id: `record-${Date.now()}`,
       userId,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
     const updated = [newRecord, ...records];
     localStorage.setItem(MOCK_STORAGE_KEY_RECORDS, JSON.stringify(updated));
@@ -300,6 +322,32 @@ export const mockFirestore = {
     const records = await mockFirestore.getMonthlyRecords(userId);
     const updated = records.filter((r) => r.id !== recordId);
     localStorage.setItem(MOCK_STORAGE_KEY_RECORDS, JSON.stringify(updated));
+  },
+  getCalculationSnapshots: async (_userId: string): Promise<CalculationSnapshot[]> => {
+    const stored = localStorage.getItem(MOCK_STORAGE_KEY_SNAPSHOTS);
+    if (stored) return JSON.parse(stored);
+    return [];
+  },
+  saveCalculationSnapshot: async (
+    userId: string,
+    snapshot: Omit<CalculationSnapshot, 'id' | 'userId' | 'createdAt'>
+  ): Promise<CalculationSnapshot> => {
+    const snapshots = await mockFirestore.getCalculationSnapshots(userId);
+    const now = new Date().toISOString();
+    const newSnapshot: CalculationSnapshot = {
+      ...snapshot,
+      id: `snapshot-${Date.now()}`,
+      userId,
+      createdAt: now,
+    };
+    const updated = [newSnapshot, ...snapshots];
+    localStorage.setItem(MOCK_STORAGE_KEY_SNAPSHOTS, JSON.stringify(updated));
+    return newSnapshot;
+  },
+  deleteCalculationSnapshot: async (userId: string, snapshotId: string): Promise<void> => {
+    const snapshots = await mockFirestore.getCalculationSnapshots(userId);
+    const updated = snapshots.filter((s) => s.id !== snapshotId);
+    localStorage.setItem(MOCK_STORAGE_KEY_SNAPSHOTS, JSON.stringify(updated));
   },
   getBudgetSettings: async (_userId: string): Promise<BudgetSettings> => {
     const stored = localStorage.getItem(MOCK_STORAGE_KEY_BUDGET);

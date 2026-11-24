@@ -48,6 +48,11 @@ service cloud.firestore {
         allow read, write: if isOwner(userId);
       }
 
+      // User's calculation snapshots subcollection
+      match /calculationSnapshots/{snapshotId} {
+        allow read, write: if isOwner(userId);
+      }
+
       // User's budget settings subcollection
       match /budgetSettings/{budgetId} {
         allow read, write: if isOwner(userId);

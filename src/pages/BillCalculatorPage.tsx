@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 import { useData } from '../contexts/DataContext';
+import { MonthlyRecord, CalculationSnapshot } from '../types';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
+import { Modal } from '../components/ui/Modal';
 import { TariffConfigModal } from '../components/bill/TariffConfigModal';
 import { formatCurrency, formatKwh } from '../utils/formatters';
 import {
@@ -18,17 +21,27 @@ import {
   ArrowRight,
   ShieldCheck,
   CheckCircle2,
+  AlertTriangle,
+  History as HistoryIcon,
+  Clock,
+  Trash2,
+  Eye,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 export const BillCalculatorPage: React.FC = () => {
+  const { currentUser } = useAuth();
   const {
     appliances,
     tariffSettings,
     totalHouseholdKwh,
     currentBillResult,
+    calculationSnapshots,
     updateTariff,
     saveCurrentMonthRecord,
+    checkDuplicateMonthRecord,
+    saveCalculationSnapshotAction,
+    removeCalculationSnapshot,
   } = useData();
 
   // Current calculation period dates
@@ -39,16 +52,94 @@ export const BillCalculatorPage: React.FC = () => {
   const [periodStart, setPeriodStart] = useState<string>(firstDayOfMonth);
   const [periodEnd, setPeriodEnd] = useState<string>(lastDayOfMonth);
   const [isTariffModalOpen, setIsTariffModalOpen] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
+  const [isSnapshotsModalOpen, setIsSnapshotsModalOpen] = useState(false);
+  const [selectedSnapshot, setSelectedSnapshot] = useState<CalculationSnapshot | null>(null);
 
-  const handleSaveRecord = async () => {
-    setIsSaving(true);
+  // Separate loading states for each button to avoid UI race conditions
+  const [isSavingSnapshot, setIsSavingSnapshot] = useState(false);
+  const [isSavingMonthlyRecord, setIsSavingMonthlyRecord] = useState(false);
+
+  // Duplicate monthly record confirmation state
+  const [duplicateModal, setDuplicateModal] = useState<{
+    isOpen: boolean;
+    existingRecord: MonthlyRecord | null;
+  }>({
+    isOpen: false,
+    existingRecord: null,
+  });
+
+  // Handler: Save Calculation Snapshot (Feature 1)
+  const handleSaveSnapshot = async () => {
+    if (!currentUser) {
+      toast.error('Authentication required: Please log in to save calculation snapshots.');
+      return;
+    }
+
+    if (appliances.length === 0) {
+      toast.warning('No appliances found. Add appliances first to calculate and save a snapshot.');
+      return;
+    }
+
+    if (isSavingSnapshot || isSavingMonthlyRecord) return;
+
+    setIsSavingSnapshot(true);
+    try {
+      await saveCalculationSnapshotAction(periodStart, periodEnd);
+    } catch (err: any) {
+      console.error('Error saving calculation snapshot:', err);
+    } finally {
+      setIsSavingSnapshot(false);
+    }
+  };
+
+  // Handler: Save Monthly Record (Feature 2)
+  const handleSaveMonthlyRecord = async () => {
+    if (!currentUser) {
+      toast.error('Authentication required: Please log in to save monthly records.');
+      return;
+    }
+
+    if (appliances.length === 0) {
+      toast.warning('No appliances found. Add appliances first to save a monthly record.');
+      return;
+    }
+
+    if (isSavingSnapshot || isSavingMonthlyRecord) return;
+
+    // Check for duplicate monthly record for this period
+    const existing = checkDuplicateMonthRecord(periodStart, periodEnd);
+    if (existing) {
+      setDuplicateModal({
+        isOpen: true,
+        existingRecord: existing,
+      });
+      return;
+    }
+
+    // Save newly calculated record
+    setIsSavingMonthlyRecord(true);
     try {
       await saveCurrentMonthRecord(periodStart, periodEnd);
     } catch (err: any) {
-      // toast is already emitted inside context, but catch here to stop loading
+      console.error('Error saving monthly record:', err);
     } finally {
-      setIsSaving(false);
+      setIsSavingMonthlyRecord(false);
+    }
+  };
+
+  // Confirm overwrite of existing monthly record
+  const handleConfirmOverwriteMonthlyRecord = async () => {
+    if (!duplicateModal.existingRecord) return;
+    setIsSavingMonthlyRecord(true);
+    try {
+      await saveCurrentMonthRecord(periodStart, periodEnd, {
+        overwriteRecordId: duplicateModal.existingRecord.id,
+      });
+      setDuplicateModal({ isOpen: false, existingRecord: null });
+    } catch (err: any) {
+      console.error('Error overwriting monthly record:', err);
+    } finally {
+      setIsSavingMonthlyRecord(false);
     }
   };
 
@@ -71,7 +162,17 @@ export const BillCalculatorPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {calculationSnapshots.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsSnapshotsModalOpen(true)}
+              leftIcon={<Clock className="w-4 h-4 text-brand-secondary" />}
+            >
+              Saved Snapshots ({calculationSnapshots.length})
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -82,11 +183,12 @@ export const BillCalculatorPage: React.FC = () => {
           </Button>
           <Button
             size="sm"
-            onClick={handleSaveRecord}
-            isLoading={isSaving}
+            onClick={handleSaveMonthlyRecord}
+            isLoading={isSavingMonthlyRecord}
+            disabled={isSavingMonthlyRecord || isSavingSnapshot}
             leftIcon={<Save className="w-4 h-4" />}
           >
-            Save Monthly Record
+            {isSavingMonthlyRecord ? 'Saving Monthly Record...' : 'Save Monthly Record'}
           </Button>
         </div>
       </div>
@@ -199,11 +301,12 @@ export const BillCalculatorPage: React.FC = () => {
           <Button
             size="md"
             className="w-full"
-            onClick={handleSaveRecord}
-            isLoading={isSaving}
+            onClick={handleSaveSnapshot}
+            isLoading={isSavingSnapshot}
+            disabled={isSavingSnapshot || isSavingMonthlyRecord}
             leftIcon={<Save className="w-4 h-4" />}
           >
-            Save Calculation Snapshot
+            {isSavingSnapshot ? 'Saving Snapshot...' : 'Save Calculation Snapshot'}
           </Button>
         </Card>
 
@@ -336,6 +439,215 @@ export const BillCalculatorPage: React.FC = () => {
           </p>
         </div>
       </div>
+
+      {/* Duplicate Monthly Record Confirmation Modal */}
+      {duplicateModal.isOpen && duplicateModal.existingRecord && (
+        <Modal
+          isOpen={duplicateModal.isOpen}
+          onClose={() => setDuplicateModal({ isOpen: false, existingRecord: null })}
+          title="Existing Monthly Record Detected"
+          description="A monthly record already exists for the selected billing period."
+          maxWidth="md"
+        >
+          <div className="space-y-4 pt-2 text-xs">
+            <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 space-y-2">
+              <div className="flex items-center gap-2 font-bold text-sm text-amber-800">
+                <AlertTriangle className="w-4 h-4 text-amber-600" />
+                <span>Duplicate Period Notice</span>
+              </div>
+              <p className="text-xs leading-relaxed text-amber-900">
+                A monthly record for <strong>{periodStart}</strong> to <strong>{periodEnd}</strong> ({duplicateModal.existingRecord.monthName}) was saved on{' '}
+                <strong>{new Date(duplicateModal.existingRecord.createdAt).toLocaleDateString()}</strong>.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 p-3 bg-brand-pale rounded-xl border border-brand-border">
+              <div>
+                <span className="font-semibold text-brand-muted block">Existing Saved Record</span>
+                <span className="font-bold text-brand-dark block text-sm mt-0.5">
+                  {formatCurrency(duplicateModal.existingRecord.estimatedBill)}
+                </span>
+                <span className="text-brand-muted text-[11px]">
+                  {formatKwh(duplicateModal.existingRecord.totalKwh)}
+                </span>
+              </div>
+              <div>
+                <span className="font-semibold text-brand-primary block">Current Calculation</span>
+                <span className="font-bold text-emerald-800 block text-sm mt-0.5">
+                  {formatCurrency(currentBillResult.totalEstimatedBill)}
+                </span>
+                <span className="text-brand-muted text-[11px]">
+                  {formatKwh(currentBillResult.totalKwh)}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-brand-muted leading-relaxed">
+              Updating this record will overwrite the previously saved estimate with your current calculation values while preserving data consistency in Cloud Firestore.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-brand-border">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setDuplicateModal({ isOpen: false, existingRecord: null })}
+                disabled={isSavingMonthlyRecord}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={handleConfirmOverwriteMonthlyRecord}
+                isLoading={isSavingMonthlyRecord}
+              >
+                Update Existing Record
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Saved Snapshots Modal */}
+      {isSnapshotsModalOpen && (
+        <Modal
+          isOpen={isSnapshotsModalOpen}
+          onClose={() => {
+            setIsSnapshotsModalOpen(false);
+            setSelectedSnapshot(null);
+          }}
+          title="Saved Calculation Snapshots"
+          description="Historical calculation snapshots preserving original appliance assumptions and tariff models."
+          maxWidth="2xl"
+        >
+          <div className="space-y-4 pt-2">
+            {selectedSnapshot ? (
+              <div className="space-y-4 text-xs">
+                <div className="flex items-center justify-between pb-3 border-b border-brand-border">
+                  <button
+                    onClick={() => setSelectedSnapshot(null)}
+                    className="text-brand-primary hover:underline font-bold flex items-center gap-1"
+                  >
+                    ← Back to all snapshots
+                  </button>
+                  <span className="text-brand-muted">
+                    Saved on {new Date(selectedSnapshot.calculationDate).toLocaleString()}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3 bg-brand-pale rounded-xl border border-brand-border">
+                    <span className="text-brand-muted block">Total Bill</span>
+                    <span className="text-base font-bold text-emerald-800">
+                      {formatCurrency(selectedSnapshot.totalEstimatedBill)}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-brand-pale rounded-xl border border-brand-border">
+                    <span className="text-brand-muted block">Consumption</span>
+                    <span className="text-base font-bold text-brand-dark">
+                      {formatKwh(selectedSnapshot.totalKwh)}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-brand-pale rounded-xl border border-brand-border">
+                    <span className="text-brand-muted block">Effective Rate</span>
+                    <span className="text-base font-bold text-brand-dark">
+                      ₹{selectedSnapshot.effectiveRatePerKwh}/kWh
+                    </span>
+                  </div>
+                  <div className="p-3 bg-brand-pale rounded-xl border border-brand-border">
+                    <span className="text-brand-muted block">Period</span>
+                    <span className="text-xs font-semibold text-brand-dark">
+                      {selectedSnapshot.periodStart} to {selectedSnapshot.periodEnd}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="font-bold text-brand-dark mb-2">Preserved Appliance Snapshot</h4>
+                  <div className="max-h-48 overflow-y-auto rounded-xl border border-brand-border">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-brand-pale border-b border-brand-border text-brand-muted">
+                        <tr>
+                          <th className="p-2">Appliance</th>
+                          <th className="p-2">Load</th>
+                          <th className="p-2">Usage</th>
+                          <th className="p-2 text-right">Monthly Units</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-brand-border/60">
+                        {selectedSnapshot.applianceSnapshots.map((app, i) => (
+                          <tr key={i}>
+                            <td className="p-2 font-semibold text-brand-dark">{app.applianceName}</td>
+                            <td className="p-2 text-brand-muted">{app.wattage}W × {app.quantity}</td>
+                            <td className="p-2 text-brand-muted">{app.hoursPerDay}h/day, {app.usageDaysPerMonth}d</td>
+                            <td className="p-2 text-right font-bold text-brand-dark">{formatKwh(app.monthlyKwh)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {calculationSnapshots.length === 0 ? (
+                  <p className="text-center py-8 text-brand-muted text-sm">
+                    No calculation snapshots saved yet. Use the "Save Calculation Snapshot" button to preserve current estimates.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-brand-border max-h-96 overflow-y-auto">
+                    {calculationSnapshots.map((snap) => (
+                      <div
+                        key={snap.id}
+                        className="py-3 flex items-center justify-between gap-4 text-xs hover:bg-brand-pale/50 px-2 rounded-lg transition-colors"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-brand-dark">
+                              {formatCurrency(snap.totalEstimatedBill)}
+                            </span>
+                            <span className="text-brand-muted">({formatKwh(snap.totalKwh)})</span>
+                            <Badge variant="neutral">{snap.provider}</Badge>
+                          </div>
+                          <div className="text-brand-muted text-[11px] flex items-center gap-2">
+                            <span>Period: {snap.periodStart} to {snap.periodEnd}</span>
+                            <span>•</span>
+                            <span>{new Date(snap.calculationDate).toLocaleDateString()}</span>
+                            <span>•</span>
+                            <span>{snap.applianceSnapshots.length} appliances</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setSelectedSnapshot(snap)}
+                            leftIcon={<Eye className="w-3.5 h-3.5 text-brand-primary" />}
+                          >
+                            Details
+                          </Button>
+                          <button
+                            onClick={async () => {
+                              if (confirm('Delete this calculation snapshot?')) {
+                                await removeCalculationSnapshot(snap.id);
+                              }
+                            }}
+                            className="p-1.5 text-brand-muted hover:text-red-600 rounded-lg hover:bg-red-50"
+                            title="Delete snapshot"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
 
       {/* Tariff Settings Modal */}
       <TariffConfigModal

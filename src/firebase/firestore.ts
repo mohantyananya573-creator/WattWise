@@ -9,12 +9,14 @@ import {
   query,
   orderBy,
   serverTimestamp,
+  runTransaction,
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from './firebaseConfig';
 import { mockFirestore } from './mockFallback';
 import {
   Appliance,
   BudgetSettings,
+  CalculationSnapshot,
   EmissionsFactor,
   MonthlyRecord,
   TariffSettings,
@@ -199,15 +201,49 @@ export async function getMonthlyRecords(userId: string): Promise<MonthlyRecord[]
 
 export async function saveMonthlyRecord(
   userId: string,
-  record: Omit<MonthlyRecord, 'id' | 'userId' | 'createdAt'>
+  record: Omit<MonthlyRecord, 'id' | 'userId' | 'createdAt'>,
+  overwriteRecordId?: string
 ): Promise<MonthlyRecord> {
   if (!isFirebaseConfigured || !db) {
-    return mockFirestore.saveMonthlyRecord(userId, record);
+    return mockFirestore.saveMonthlyRecord(userId, record, overwriteRecordId);
+  }
+
+  const now = new Date().toISOString();
+
+  if (overwriteRecordId) {
+    const recordDocRef = doc(db, 'users', userId, 'monthlyRecords', overwriteRecordId);
+    let originalCreatedAt = now;
+
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(recordDocRef);
+      if (!snap.exists()) {
+        throw new Error(`Record ${overwriteRecordId} does not exist in the database.`);
+      }
+      const existingData = snap.data();
+      originalCreatedAt = existingData.createdAt || now;
+
+      const updatedRecord = {
+        ...record,
+        id: overwriteRecordId,
+        userId,
+        createdAt: originalCreatedAt,
+        updatedAt: now,
+        serverUpdatedAt: serverTimestamp(),
+      };
+      transaction.set(recordDocRef, updatedRecord);
+    });
+
+    return {
+      ...record,
+      id: overwriteRecordId,
+      userId,
+      createdAt: originalCreatedAt,
+      updatedAt: now,
+    };
   }
 
   const colRef = collection(db, 'users', userId, 'monthlyRecords');
   const newDocRef = doc(colRef);
-  const now = new Date().toISOString();
   const newRecord: MonthlyRecord = {
     ...record,
     id: newDocRef.id,
@@ -215,7 +251,10 @@ export async function saveMonthlyRecord(
     createdAt: now,
   };
 
-  await setDoc(newDocRef, newRecord);
+  await setDoc(newDocRef, {
+    ...newRecord,
+    serverCreatedAt: serverTimestamp(),
+  });
   return newRecord;
 }
 
@@ -226,6 +265,56 @@ export async function deleteMonthlyRecord(userId: string, recordId: string): Pro
   }
 
   const docRef = doc(db, 'users', userId, 'monthlyRecords', recordId);
+  await deleteDoc(docRef);
+}
+
+// Calculation Snapshots Service
+export async function getCalculationSnapshots(userId: string): Promise<CalculationSnapshot[]> {
+  if (!isFirebaseConfigured || !db) {
+    return mockFirestore.getCalculationSnapshots(userId);
+  }
+
+  const colRef = collection(db, 'users', userId, 'calculationSnapshots');
+  const q = query(colRef, orderBy('createdAt', 'desc'));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((docSnap) => ({
+    id: docSnap.id,
+    ...docSnap.data(),
+  })) as CalculationSnapshot[];
+}
+
+export async function saveCalculationSnapshot(
+  userId: string,
+  snapshot: Omit<CalculationSnapshot, 'id' | 'userId' | 'createdAt'>
+): Promise<CalculationSnapshot> {
+  if (!isFirebaseConfigured || !db) {
+    return mockFirestore.saveCalculationSnapshot(userId, snapshot);
+  }
+
+  const colRef = collection(db, 'users', userId, 'calculationSnapshots');
+  const newDocRef = doc(colRef);
+  const now = new Date().toISOString();
+  const newSnapshot: CalculationSnapshot = {
+    ...snapshot,
+    id: newDocRef.id,
+    userId,
+    createdAt: now,
+  };
+
+  await setDoc(newDocRef, {
+    ...newSnapshot,
+    serverCreatedAt: serverTimestamp(),
+  });
+  return newSnapshot;
+}
+
+export async function deleteCalculationSnapshot(userId: string, snapshotId: string): Promise<void> {
+  if (!isFirebaseConfigured || !db) {
+    await mockFirestore.deleteCalculationSnapshot(userId, snapshotId);
+    return;
+  }
+
+  const docRef = doc(db, 'users', userId, 'calculationSnapshots', snapshotId);
   await deleteDoc(docRef);
 }
 
